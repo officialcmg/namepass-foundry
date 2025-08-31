@@ -12,9 +12,13 @@ contract NamepassBasenameScript is Script {
     function run() public {
         vm.startBroadcast();
 
-        // Deploy with a mock controller address - replace with actual controller
-        address mockController = address(0x1234567890123456789012345678901234567890);
-        namepassBasename = new NamepassBasename(mockController);
+        // Base Mainnet Basename Registrar Controller
+        address baseMainnetController = address(0x4cCb0BB02FCABA27e82a56646E81d8c5bC4119a5);
+        
+        namepassBasename = new NamepassBasename(baseMainnetController);
+        
+        console.log("NamepassBasename deployed to:", address(namepassBasename));
+        console.log("Controller address:", baseMainnetController);
 
         vm.stopBroadcast();
     }

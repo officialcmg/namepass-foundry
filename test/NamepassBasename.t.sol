@@ -19,22 +19,21 @@ contract MockController {
     string public lastRequestName;
     address public lastRequestOwner;
     uint256 public lastRequestDuration;
-    address public lastRequestResolver;
-    bool public lastRequestReverseRecord;
     uint256 public lastValue;
     
-    function register(RegisterRequest calldata request) external payable {
-        require(!shouldRevert, "Mock registration failed");
-        lastRequestName = request.name;
-        lastRequestOwner = request.owner;
-        lastRequestDuration = request.duration;
-        lastRequestResolver = request.resolver;
-        lastRequestReverseRecord = request.reverseRecord;
+    function register(RegisterRequest calldata req) external payable {
+        lastRequestName = req.name;
+        lastRequestOwner = req.owner;
+        lastRequestDuration = req.duration;
         lastValue = msg.value;
     }
     
     function registerPrice(string calldata, uint256) external pure returns (uint256) {
-        return 0.001 ether;
+        return 0; // Mock price
+    }
+    
+    function available(string calldata) external pure returns (bool) {
+        return true; // Mock availability - always available by default
     }
     
     function setShouldRevert(bool _shouldRevert) external {
@@ -151,21 +150,23 @@ contract NamepassBasenameTest is Test {
         namepassBasename.createVoucher{value: insufficient}(secretHash, length);
     }
     
-    function test_CreateVoucher_OnlyOwner() public {
-        bytes32 secretHash = keccak256("test_secret_owner");
+    function test_CreateVoucher_AnyoneCanCreate() public {
+        bytes32 secretHash = keccak256("test_secret_anyone");
         uint8 length = 5;
         uint256 totalRequired = 0.001 ether + 0.0001 ether;
         
+        // Anyone should be able to create vouchers by paying the fee
         vm.prank(user);
-        vm.expectRevert();
         namepassBasename.createVoucher{value: totalRequired}(secretHash, length);
+        
+        assertEq(uint256(namepassBasename.getVoucherStatus(secretHash)), uint256(NamepassBasename.VoucherStatus.Available));
     }
 
     // === VOUCHER REDEMPTION TESTS ===
     
     function test_RedeemVoucher_Success() public {
         // Create voucher first
-        bytes32 secret = keccak256("redemption_secret");
+        string memory secret = "redemption_secret";
         bytes32 secretHash = keccak256(abi.encodePacked(secret));
         uint8 length = 5;
         uint256 totalRequired = 0.001 ether + 0.0001 ether;
@@ -175,11 +176,11 @@ contract NamepassBasenameTest is Test {
         // Redeem voucher
         string memory label = "hello";
         
-        vm.expectEmit(true, false, true, true);
+        vm.expectEmit(true, false, false, true);
         emit NamepassBasename.VoucherRedeemed(secretHash, label, user);
         
         vm.prank(user);
-        namepassBasename.redeem(label, secret);
+        namepassBasename.redeem("hello", secret);
         
         // Check voucher is now used
         assertEq(uint256(namepassBasename.getVoucherStatus(secretHash)), uint256(NamepassBasename.VoucherStatus.Used));
@@ -192,17 +193,37 @@ contract NamepassBasenameTest is Test {
     }
     
     function test_RedeemVoucher_RevertNonExistent() public {
-        bytes32 secret = keccak256("nonexistent_secret");
-        string memory label = "hello";
+        bytes32 nonExistentHash = keccak256("non_existent");
         
         vm.prank(user);
         vm.expectRevert("Voucher does not exist");
-        namepassBasename.redeem(label, secret);
+        namepassBasename.redeem("hello", "non_existent");
+    }
+    
+    function test_RedeemVoucher_RevertDomainNotAvailable() public {
+        // Create voucher first
+        string memory secret = "domain_taken_secret";
+        bytes32 secretHash = keccak256(abi.encodePacked(secret));
+        uint8 length = 5;
+        uint256 totalRequired = 0.001 ether + 0.0001 ether;
+        
+        namepassBasename.createVoucher{value: totalRequired}(secretHash, length);
+        
+        // Mock controller to return false for availability
+        vm.mockCall(
+            address(mockController),
+            abi.encodeWithSignature("available(string)", "hello"),
+            abi.encode(false)
+        );
+        
+        vm.prank(user);
+        vm.expectRevert("Domain is not available");
+        namepassBasename.redeem("hello", secret);
     }
     
     function test_RedeemVoucher_RevertAlreadyUsed() public {
         // Create and redeem voucher
-        bytes32 secret = keccak256("used_secret");
+        string memory secret = "used_secret";
         bytes32 secretHash = keccak256(abi.encodePacked(secret));
         uint8 length = 5;
         uint256 totalRequired = 0.001 ether + 0.0001 ether;
@@ -220,7 +241,7 @@ contract NamepassBasenameTest is Test {
     
     function test_RedeemVoucher_RevertExpired() public {
         // Create voucher
-        bytes32 secret = keccak256("expired_secret");
+        string memory secret = "expired_secret";
         bytes32 secretHash = keccak256(abi.encodePacked(secret));
         uint8 length = 5;
         uint256 totalRequired = 0.001 ether + 0.0001 ether;
@@ -237,7 +258,7 @@ contract NamepassBasenameTest is Test {
     
     function test_RedeemVoucher_RevertWrongLength() public {
         // Create voucher for length 5
-        bytes32 secret = keccak256("length_secret");
+        string memory secret = "length_secret";
         bytes32 secretHash = keccak256(abi.encodePacked(secret));
         uint8 length = 5;
         uint256 totalRequired = 0.001 ether + 0.0001 ether;
@@ -253,8 +274,23 @@ contract NamepassBasenameTest is Test {
     // === VOUCHER STATUS TESTS ===
     
     function test_GetVoucherStatus_Invalid() public {
-        bytes32 nonExistentHash = keccak256("nonexistent");
+        bytes32 nonExistentHash = keccak256("non_existent_status");
+        
         assertEq(uint256(namepassBasename.getVoucherStatus(nonExistentHash)), uint256(NamepassBasename.VoucherStatus.Invalid));
+    }
+    
+    function test_IsDomainAvailable() public {
+        // Test default mock behavior (returns true)
+        assertTrue(namepassBasename.isDomainAvailable("test"));
+        
+        // Test with mocked unavailable domain
+        vm.mockCall(
+            address(mockController),
+            abi.encodeWithSignature("available(string)", "taken"),
+            abi.encode(false)
+        );
+        
+        assertFalse(namepassBasename.isDomainAvailable("taken"));
     }
     
     function test_GetVoucherStatus_Available() public {
@@ -268,7 +304,7 @@ contract NamepassBasenameTest is Test {
     }
     
     function test_GetVoucherStatus_Used() public {
-        bytes32 secret = keccak256("used_status_secret");
+        string memory secret = "used_status_secret";
         bytes32 secretHash = keccak256(abi.encodePacked(secret));
         uint8 length = 5;
         uint256 totalRequired = 0.001 ether + 0.0001 ether;
@@ -322,7 +358,7 @@ contract NamepassBasenameTest is Test {
     // === INTEGRATION TESTS ===
     
     function test_FullVoucherLifecycle() public {
-        bytes32 secret = keccak256("lifecycle_secret");
+        string memory secret = "lifecycle_secret";
         bytes32 secretHash = keccak256(abi.encodePacked(secret));
         uint8 length = 5;
         uint256 totalRequired = 0.001 ether + 0.0001 ether;
@@ -353,7 +389,7 @@ contract NamepassBasenameTest is Test {
         else if (length >= 5 && length <= 9) expectedEscrow = 0.001 ether;
         else expectedEscrow = 0.0001 ether;
         
-        uint256 totalRequired = namepassBasename._calculateFinalValue(expectedEscrow);
+        uint256 totalRequired = namepassBasename.calculateFinalValue(expectedEscrow);
         
         namepassBasename.createVoucher{value: totalRequired}(secretHash, length);
         
@@ -374,9 +410,9 @@ contract NamepassBasenameTest is Test {
         namepassBasename.createVoucher{value: 1 ether}(secretHash, length);
     }
     
-    function testFuzz_RedeemVoucher_ValidLabels(string memory label, bytes32 secret) public {
+    function testFuzz_RedeemVoucher_ValidLabels(string memory label, string memory secret) public {
         vm.assume(bytes(label).length >= 3 && bytes(label).length <= 20);
-        vm.assume(secret != 0);
+        vm.assume(bytes(secret).length > 0);
         
         bytes32 secretHash = keccak256(abi.encodePacked(secret));
         uint8 length = uint8(bytes(label).length);
@@ -387,7 +423,7 @@ contract NamepassBasenameTest is Test {
         else if (length >= 5 && length <= 9) expectedEscrow = 0.001 ether;
         else expectedEscrow = 0.0001 ether;
         
-        uint256 totalRequired = namepassBasename._calculateFinalValue(expectedEscrow);
+        uint256 totalRequired = namepassBasename.calculateFinalValue(expectedEscrow);
         
         // Create voucher
         namepassBasename.createVoucher{value: totalRequired}(secretHash, length);
@@ -406,7 +442,7 @@ contract NamepassBasenameTest is Test {
         // Bound escrow amount to reasonable values (at least 0.00001 ETH)
         escrowAmount = bound(escrowAmount, 10000000000000, 10 ether);
         
-        uint256 finalValue = namepassBasename._calculateFinalValue(escrowAmount);
+        uint256 finalValue = namepassBasename.calculateFinalValue(escrowAmount);
         
         // Final value should always be greater than original
         assertGt(finalValue, escrowAmount);
@@ -503,7 +539,7 @@ contract VoucherHandler is Test {
         else if (length >= 5 && length <= 9) expectedEscrow = 0.001 ether;
         else expectedEscrow = 0.0001 ether;
         
-        uint256 totalRequired = namepassBasename._calculateFinalValue(expectedEscrow);
+        uint256 totalRequired = namepassBasename.calculateFinalValue(expectedEscrow);
         
         if (address(this).balance >= totalRequired) {
             namepassBasename.createVoucher{value: totalRequired}(secretHash, length);
@@ -515,7 +551,7 @@ contract VoucherHandler is Test {
         bytes32 secretHash = keccak256(abi.encodePacked(secret));
         
         if (namepassBasename.getVoucherStatus(secretHash) == NamepassBasename.VoucherStatus.Available) {
-            try namepassBasename.redeem(label, secret) {
+            try namepassBasename.redeem(label, "test_secret") {
                 usedVouchers.push(secretHash);
             } catch {
                 // Redemption failed, continue

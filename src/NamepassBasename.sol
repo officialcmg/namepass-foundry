@@ -15,6 +15,7 @@ interface IBaseRegistrarController {
 
     function register(RegisterRequest calldata request) external payable;
     function registerPrice(string calldata name, uint256 duration) external view returns (uint256);
+    function available(string calldata name) external view returns (bool);
 }
 
 contract NamepassBasename is Ownable {
@@ -39,7 +40,7 @@ contract NamepassBasename is Ownable {
     // Voucher Status Enum
     enum VoucherStatus { Invalid, Available, Used, Expired }
 
-    event VoucherCreated(bytes32 indexed secretHash, uint8 length, uint256 escrow, uint256 expiry);
+    event VoucherCreated(bytes32 indexed secretHash, address indexed creator, uint8 length, uint256 escrow, uint256 expiry);
     event VoucherRedeemed(bytes32 indexed secretHash, string label, address indexed redeemer);
 
     // === ESCROW FEE LOGIC ===
@@ -55,7 +56,7 @@ contract NamepassBasename is Ownable {
     uint256 private constant FEE_FOR_POINT_ZERO_ZERO_ZERO_ONE = 50000000000000;  // 50% of 0.0001 ETH = 0.00005 ETH
     uint256 private constant FALLBACK_FEE = 20000000000000;                      // Fallback fee of 0.00002 ETH
 
-    function _calculateFinalValue(uint256 originalValue) public pure returns (uint256) {
+    function calculateFinalValue(uint256 originalValue) public pure returns (uint256) {
         if (originalValue == POINT_ONE_ETH) return originalValue + FEE_FOR_POINT_ONE;
         if (originalValue == POINT_ZERO_ONE_ETH) return originalValue + FEE_FOR_POINT_ZERO_ONE;
         if (originalValue == POINT_ZERO_ZERO_ONE_ETH) return originalValue + FEE_FOR_POINT_ZERO_ZERO_ONE;
@@ -64,7 +65,7 @@ contract NamepassBasename is Ownable {
     }
 
     // === VOUCHER CREATION ===
-    function createVoucher(bytes32 secretHash, uint8 length) external payable onlyOwner {
+    function createVoucher(bytes32 secretHash, uint8 length) external payable {
         require(length >= 3, "Basename too short");
         require(vouchers[secretHash].secretHash == 0, "Voucher already exists");
 
@@ -74,7 +75,7 @@ contract NamepassBasename is Ownable {
         else if (length >= 5 && length <= 9) escrow = POINT_ZERO_ZERO_ONE_ETH;
         else escrow = POINT_ZERO_ZERO_ZERO_ONE_ETH;
 
-        uint256 finalValue = _calculateFinalValue(escrow);
+        uint256 finalValue = calculateFinalValue(escrow);
         require(msg.value >= finalValue, "Insufficient ETH sent");
 
         vouchers[secretHash] = Voucher({
@@ -85,11 +86,11 @@ contract NamepassBasename is Ownable {
             used: false
         });
 
-        emit VoucherCreated(secretHash, length, escrow, block.timestamp + 365 days);
+        emit VoucherCreated(secretHash, msg.sender, length, escrow, block.timestamp + 365 days);
     }
 
     // === REDEEM VOUCHER ===
-    function redeem(string calldata label, bytes32 secret) external {
+    function redeem(string calldata label, string calldata secret) external {
         bytes32 hash = keccak256(abi.encodePacked(secret));
         Voucher storage v = vouchers[hash];
 
@@ -97,8 +98,13 @@ contract NamepassBasename is Ownable {
         require(!v.used, "Voucher already used");
         require(block.timestamp <= v.expiry, "Voucher expired");
         require(bytes(label).length == v.length, "Wrong length for this voucher");
+        require(controller.available(label), "Domain is not available");
 
-        // Build request
+        // Check the actual registration price from the controller
+        uint256 actualPrice = controller.registerPrice(label, 365 days);
+        require(v.escrow >= actualPrice, "Insufficient escrow for current price");
+
+        // Build request - use empty data array and no resolver to avoid validation issues
         IBaseRegistrarController.RegisterRequest memory req =
             IBaseRegistrarController.RegisterRequest({
                 name: label,
@@ -111,9 +117,19 @@ contract NamepassBasename is Ownable {
 
         v.used = true;
 
-        controller.register{value: v.escrow}(req);
+        // Attempt registration with proper error handling - send the actual required price
+        try controller.register{value: actualPrice}(req) {
+            emit VoucherRedeemed(hash, label, msg.sender);
+        } catch {
+            // Revert voucher state if registration fails
+            v.used = false;
+            revert("Domain registration failed");
+        }
+    }
 
-        emit VoucherRedeemed(hash, label, msg.sender);
+    // === DOMAIN AVAILABILITY ===
+    function isDomainAvailable(string calldata name) external view returns (bool) {
+        return controller.available(name);
     }
 
     // === VOUCHER STATUS ===
