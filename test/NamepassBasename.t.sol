@@ -19,12 +19,16 @@ contract MockController {
     string public lastRequestName;
     address public lastRequestOwner;
     uint256 public lastRequestDuration;
+    address public lastRequestResolver;
+    bool public lastRequestReverseRecord;
     uint256 public lastValue;
     
     function register(RegisterRequest calldata req) external payable {
         lastRequestName = req.name;
         lastRequestOwner = req.owner;
         lastRequestDuration = req.duration;
+        lastRequestResolver = req.resolver;
+        lastRequestReverseRecord = req.reverseRecord;
         lastValue = msg.value;
     }
     
@@ -68,8 +72,8 @@ contract NamepassBasenameTest is Test {
         uint256 expectedFee = 0.0004 ether;
         uint256 totalRequired = expectedEscrow + expectedFee;
         
-        vm.expectEmit(true, false, false, true);
-        emit NamepassBasename.VoucherCreated(secretHash, length, expectedEscrow, block.timestamp + 365 days);
+        vm.expectEmit(true, true, false, true);
+        emit NamepassBasename.VoucherCreated(secretHash, owner, length, expectedEscrow, block.timestamp + 365 days);
         
         namepassBasename.createVoucher{value: totalRequired}(secretHash, length);
         
@@ -185,11 +189,13 @@ contract NamepassBasenameTest is Test {
         // Check voucher is now used
         assertEq(uint256(namepassBasename.getVoucherStatus(secretHash)), uint256(NamepassBasename.VoucherStatus.Used));
         
-        // Check controller received correct call
+        // Check controller received correct call with resolver and reverse record
         assertEq(mockController.lastRequestName(), label);
         assertEq(mockController.lastRequestOwner(), user);
         assertEq(mockController.lastRequestDuration(), 365 days);
-        assertEq(mockController.lastValue(), 0.001 ether);
+        assertEq(mockController.lastRequestResolver(), 0xC6d566A56A1aFf6508b41f6c90ff131615583BCD);
+        assertTrue(mockController.lastRequestReverseRecord());
+        assertEq(mockController.lastValue(), 0); // Mock returns 0 price
     }
     
     function test_RedeemVoucher_RevertNonExistent() public {

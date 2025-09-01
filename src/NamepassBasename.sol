@@ -104,15 +104,20 @@ contract NamepassBasename is Ownable {
         uint256 actualPrice = controller.registerPrice(label, 365 days);
         require(v.escrow >= actualPrice, "Insufficient escrow for current price");
 
-        // Build request - use empty data array and no resolver to avoid validation issues
+        // Build request with proper resolver and reverse record
+        address resolver = 0xC6d566A56A1aFf6508b41f6c90ff131615583BCD; // Base L2Resolver
+        
+        // Use empty data array - let controller handle record setting
+        bytes[] memory data = new bytes[](0);
+        
         IBaseRegistrarController.RegisterRequest memory req =
             IBaseRegistrarController.RegisterRequest({
                 name: label,
                 owner: msg.sender,
                 duration: 365 days,
-                resolver: address(0),
-                data: new bytes[](0),
-                reverseRecord: false
+                resolver: resolver,
+                data: data,
+                reverseRecord: true  // Set as primary name
             });
 
         v.used = true;
